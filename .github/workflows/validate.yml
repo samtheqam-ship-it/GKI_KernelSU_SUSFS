@@ -31,3 +31,7 @@ jobs:
 
       - name: Validate Python syntax
         run: python3 .github/scripts/validate_python.py
+
+      - name: Validate NP03J installer syntax and flash guards
+        shell: pwsh
+        run: ./tests/np03j/Test-Installer.ps1
