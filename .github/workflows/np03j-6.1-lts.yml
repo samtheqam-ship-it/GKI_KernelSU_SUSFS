@@ -2,6 +2,12 @@ name: NP03J · Android 14 / 6.1 LTS · Next Spoofed
 
 on:
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      NP03J_KEYSTORE_B64:
+        required: true
+      NP03J_KEYSTORE_PASSWORD:
+        required: true
 
 permissions:
   contents: read
@@ -69,6 +75,9 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Prepare the exact official sources with a fixed spoofed package
         id: toolchain
         run: python3 .github/np03j/np03j.py prepare-manager source-lock/source-lock.json manager-source

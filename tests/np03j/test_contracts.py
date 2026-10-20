@@ -58,7 +58,7 @@ class Round1Pass1Workflow(unittest.TestCase):
             with self.subTest(key=key), patch.object(m, 'read_json', return_value=changed), self.assertRaises(RuntimeError):
                 m.locked_profile()
 
-    def test_manual_only_pinned_actions_and_private_key_cleanup(self):
+    def test_manual_entry_pinned_actions_and_private_key_cleanup(self):
         workflow = (ROOT / '.github/workflows/np03j-6.1-lts.yml').read_text()
         self.assertIn('  workflow_dispatch:', workflow)
         self.assertNotRegex(workflow, re.compile(r'^  (push|schedule|workflow_run|pull_request):', re.M))
@@ -69,6 +69,14 @@ class Round1Pass1Workflow(unittest.TestCase):
         self.assertIn('name: Remove private signing material\n        if: always()', workflow)
         self.assertIn('path: manager-artifacts/', workflow)
         self.assertNotIn('path: manager-source/', workflow)
+
+    def test_android_setup_does_not_request_the_retired_tools_package(self):
+        workflow = (ROOT / '.github/workflows/np03j-6.1-lts.yml').read_text()
+        setup = re.search(r'      - uses: android-actions/setup-android@[^\n]+\n((?:        [^\n]*\n)+)', workflow)
+        self.assertIsNotNone(setup)
+        packages = re.search(r'^          packages: (.+)$', setup.group(1), re.M)
+        self.assertIsNotNone(packages)
+        self.assertEqual(packages.group(1).split(), ['platform-tools'])
 
 
 class Round1Pass2Sources(unittest.TestCase):

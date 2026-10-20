@@ -1,0 +1,14 @@
+name: NP03J · isolated build trigger
+
+on:
+  push:
+    branches:
+      - np03j-build
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/np03j-6.1-lts.yml
+    secrets: inherit
