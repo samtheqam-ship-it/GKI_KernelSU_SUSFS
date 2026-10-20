@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -31,7 +32,7 @@ def image():
     data = bytearray(5000)
     struct.pack_into('<Q', data, 24, 2)
     data[56:60] = b'ARM\x64'
-    marker = (identity()['certificate_sha256'] + ' ' + identity()['package'] + ' susfs baseband_guard').encode()
+    marker = ('0x2bc:' + identity()['certificate_sha256'] + '\x00' + identity()['package'] + ' susfs baseband_guard').encode()
     data[100:100 + len(marker)] = marker
     return data
 
@@ -107,10 +108,45 @@ class Round2Pass1Trust(unittest.TestCase):
         value = identity()
         result = m.patch_root_kbuild(self.SOURCE, value, value['official_sha'])
         self.assertTrue(result.startswith('# NP03J:'))
-        self.assertIn('KSU_NEXT_MANAGER_LIST := 700:' + 'b' * 64, result)
+        self.assertIn('KSU_NEXT_MANAGER_LIST := 0x2bc:' + 'b' * 64, result)
         self.assertIn('KSU_MANAGER_PACKAGE := ' + value['package'], result)
         self.assertIn('KSU_GIT_VERSION := 3405', result)
         self.assertIn('KSU_GIT_VERSION_VALID := 1', result)
+
+    def test_certificate_size_roundtrips_through_the_kernel_c_hex_parser(self):
+        # Use the consumer's C sscanf format so the old decimal writer fails.
+        source = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int main(int argc, char **argv) {
+    unsigned int size = 0;
+    char hash[65] = {0};
+    if (argc != 4) return 2;
+    return !(sscanf(argv[1], "%x:%64[^,]", &size, hash) == 2 &&
+             size == strtoul(argv[2], NULL, 10) && strcmp(hash, argv[3]) == 0);
+}
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)
+            (path / 'parser.c').write_text(source)
+            subprocess.run(['cc', '-Wall', '-Wextra', '-Werror', str(path / 'parser.c'),
+                            '-o', str(path / 'parser')], check=True, capture_output=True)
+            for size in (1, 9, 10, 255, 256, 700, 730, 1024):
+                with self.subTest(size=size):
+                    value = dict(identity(), certificate_size=size)
+                    result = m.patch_root_kbuild(self.SOURCE, value, value['official_sha'])
+                    entry = re.search(r'^KSU_NEXT_MANAGER_LIST := (.+)$', result, re.M)[1]
+                    subprocess.run([str(path / 'parser'), entry, str(size), 'b' * 64], check=True)
+            old = subprocess.run([str(path / 'parser'), '730:' + 'b' * 64, '730', 'b' * 64])
+            self.assertNotEqual(old.returncode, 0)
+
+    def test_upstream_size_parser_changes_require_audit(self):
+        consumer = 'if (sscanf(p, "%x:%64[^,]", &size, hash) == 2) {}'
+        m.verify_manager_size_parser(consumer)
+        for changed in (consumer.replace('%x:', '%u:'), consumer.replace('%x:', '%i:'), ''):
+            with self.subTest(source=changed), self.assertRaises(RuntimeError):
+                m.verify_manager_size_parser(changed)
 
     def test_malformed_identity_or_changed_source_fails(self):
         for key, bad in (('certificate_sha256', 'x' * 64), ('certificate_size', 1025),
@@ -137,6 +173,15 @@ class Round2Pass2CompiledKernel(unittest.TestCase):
         wrong = bytearray(image()); struct.pack_into('<Q', wrong, 24, 4)
         for data in (bytes(5000), wrong, image().replace(b'b' * 64, b'c' * 64), image().replace(b'susfs', b'xxxxx')):
             with self.assertRaises(RuntimeError): m.verify_image(data, identity())
+
+    def test_correct_hash_with_wrong_certificate_length_is_rejected(self):
+        for wrong in (b'700:', b'0x700:', b'0x2bd:'):
+            data = image().replace(b'0x2bc:', wrong)
+            with self.subTest(entry=wrong), self.assertRaises(RuntimeError):
+                m.verify_image(data, identity())
+        unterminated = image().replace(('b' * 64 + '\x00').encode(), ('b' * 64 + ',').encode())
+        with self.assertRaises(RuntimeError):
+            m.verify_image(unterminated, identity())
 
     def test_early_return_bypass_is_rejected_even_with_original_bad_version_label(self):
         upstream = 'int check_version(void) {\n /* body */\nbad_version:\nreturn 0;\n}\n'
@@ -172,7 +217,8 @@ class Round3Pass2Publication(unittest.TestCase):
             lock = fake_lock(); lock_path = base / 'lock.json'; m.write_json(lock_path, lock)
             cert = b'public test certificate'; apk = b'fake APK for artifact binding only'
             ident = dict(identity(), certificate_sha256=m.digest(cert), certificate_size=len(cert), apk_sha256=m.digest(apk))
-            data = bytes(image()).replace(b'b' * 64, ident['certificate_sha256'].encode())
+            data = bytes(image()).replace(b'0x2bc:' + b'b' * 64,
+                                        f"{len(cert):#x}:{ident['certificate_sha256']}".encode())
             meta = {'device': 'NP03J', 'page_size': 4096, 'kmi': '6.1-android14-11', 'sublevel': 177,
                     'kernel_release': '6.1.177-android14-11-g1234567', 'uapi_version': 6,
                     'manager_certificate_sha256': ident['certificate_sha256'], 'manager_package': ident['package'],

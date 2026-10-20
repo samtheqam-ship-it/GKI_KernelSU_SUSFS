@@ -375,9 +375,16 @@ def patch_root_kbuild(text, identity, official_sha):
     text = text.replace(anchor, f"KSU_GIT_VERSION := {identity['version_code'] - 30000}\n"
                         f"KSU_GIT_TAG := {version_name}\nKSU_GIT_VERSION_VALID := 1\n\n" + anchor)
     prefix = ("# NP03J: exact official base + one persistent manager certificate.\n"
-              f"KSU_NEXT_MANAGER_LIST := {identity['certificate_size']}:{identity['certificate_sha256']}\n"
+              # The root APK verifier reads this field with sscanf("%x"), not decimal.
+              f"KSU_NEXT_MANAGER_LIST := {identity['certificate_size']:#x}:{identity['certificate_sha256']}\n"
               f"KSU_MANAGER_PACKAGE := {identity['package']}\n")
     return prefix + text
+
+
+def verify_manager_size_parser(text):
+    # Fail closed if a future root revision changes the trust-list wire format.
+    require(re.search(r'sscanf\s*\(\s*p\s*,\s*"%x:%64\[\^,\]"\s*,\s*&size\s*,\s*hash\s*\)', text),
+            "Root manager certificate-size parser changed; audit the trust-list encoding")
 
 
 def integrate_root(lock_path, identity_path, kernel):
@@ -399,6 +406,7 @@ def integrate_root(lock_path, identity_path, kernel):
     require(uapi_version((checkout / "uapi/supercall.h").read_text()) == identity["uapi_version"], "Root UAPI mismatch")
     require(run("git", "rev-parse", f"{official}:uapi", cwd=checkout, capture=True).strip() ==
             run("git", "rev-parse", "HEAD:uapi", cwd=checkout, capture=True).strip(), "UAPI tree mismatch")
+    verify_manager_size_parser((checkout / "kernel/manager/apk_sign.c").read_text())
     kbuild = checkout / "kernel/Kbuild"
     kbuild.write_text(patch_root_kbuild(kbuild.read_text(), identity, official))
     drivers = kernel / "common/drivers"
@@ -497,7 +505,10 @@ def verify_image(data, identity):
     require(len(data) > 4096 and data[56:60] == b"ARM\x64", "Not an uncompressed ARM64 kernel Image")
     flags = struct.unpack_from("<Q", data, 24)[0]
     require((flags >> 1) & 3 == 1, "ARM64 Image header does not specify 4K pages")
-    require(identity["certificate_sha256"].encode() in data, "Manager trust hash missing from compiled Image")
+    # Check the complete NUL-terminated list, including the size the C parser consumes.
+    # A matching hash alone would accept a decimal/hexadecimal length mismatch.
+    trust = f"{identity['certificate_size']:#x}:{identity['certificate_sha256']}".encode() + b"\x00"
+    require(trust in data, "Exact manager trust entry missing from compiled Image")
     require(identity["package"].encode() in data, "Manager package restriction missing from compiled Image")
     require(b"susfs" in data and b"baseband_guard" in data, "Required compiled features missing")
 
