@@ -38,11 +38,21 @@
         if ((Invoke-NpAdb @('shell', 'getenforce')) -cne 'Enforcing') { throw 'STOP: SELINUX_CHANGED' }
         if ((Invoke-NpRoot 'id -u') -ne '0') { throw 'STOP: SHELL_ROOT_NOT_GRANTED' }
     }
+    function ConvertFrom-NpJsonArray {
+        param([string]$NpJson)
+        $NpTrimmed = $NpJson.Trim()
+        if (!$NpTrimmed.StartsWith('[') -or !$NpTrimmed.EndsWith(']')) { throw 'STOP: JSON_VALUE_NOT_AN_ARRAY' }
+        # A nested property preserves empty/singleton arrays on both Windows
+        # PowerShell 5.1 and PowerShell 7 without relying on pipeline enumeration.
+        $NpEnvelope = ConvertFrom-Json -InputObject ('{"arrays":[' + $NpTrimmed + ']}')
+        if ($NpEnvelope.arrays.Count -ne 1 -or $NpEnvelope.arrays[0] -isnot [array]) { throw 'STOP: JSON_VALUE_NOT_AN_ARRAY' }
+        return ,$NpEnvelope.arrays[0]
+    }
     function Get-NpExclusions {
         param([string]$NpJson)
         $NpTrimmed = $NpJson.Trim()
         if (!$NpTrimmed.StartsWith('[') -or !$NpTrimmed.EndsWith(']')) { throw 'STOP: EXCLUSIONS_NOT_AN_ARRAY' }
-        $NpItems = @($NpJson | ConvertFrom-Json)
+        $NpItems = ConvertFrom-NpJsonArray $NpJson
         foreach ($NpItem in $NpItems) {
             if ($null -eq $NpItem -or $null -eq $NpItem.PSObject.Properties['uid']) { throw 'STOP: EXCLUSION_UID_MISSING' }
             $NpUid = [string]$NpItem.uid
@@ -309,14 +319,14 @@ echo NOMOUNT_POST_REBOOT_CHECKS_PASSED
     [IO.File]::WriteAllText((Join-Path $NpWork 'verification.log'), $NpVerification, [Text.UTF8Encoding]::new($false))
     if ($NpVerification -notmatch '(?m)^NOMOUNT_POST_REBOOT_CHECKS_PASSED$') { throw 'STOP: POST_REBOOT_CHECKS_INCOMPLETE' }
     $NpActualUidsJson = Invoke-NpRoot '/data/adb/modules/nomount/bin/nm uid list'
-    $NpActualUids = @($NpActualUidsJson | ConvertFrom-Json)
+    $NpActualUids = ConvertFrom-NpJsonArray $NpActualUidsJson
     foreach ($NpUid in $NpExpectedUids) {
         if ($NpActualUids -notcontains $NpUid) { throw "STOP: PERSISTENT_UID_NOT_RESTORED: $NpUid" }
     }
     $NpRulesJson = Invoke-NpRoot '/data/adb/modules/nomount/bin/nm rule list --json'
-    $NpRules = @($NpRulesJson | ConvertFrom-Json)
+    $NpRules = ConvertFrom-NpJsonArray $NpRulesJson
     $NpModulesJson = Invoke-NpRoot '/data/adb/ksud module list'
-    $NpModules = @($NpModulesJson | ConvertFrom-Json)
+    $NpModules = ConvertFrom-NpJsonArray $NpModulesJson
     $NpInstalled = @($NpModules | Where-Object { $_.id -ceq 'nomount' })
     if ($NpInstalled.Count -ne 1 -or $NpInstalled[0].enabled -cne 'true' -or $NpInstalled[0].remove -cne 'false' -or $NpInstalled[0].update -cne 'false') { throw 'STOP: MANAGER_MODULE_STATE_MISMATCH' }
     [IO.File]::WriteAllText((Join-Path $NpWork 'active-rules.json'), $NpRulesJson, [Text.UTF8Encoding]::new($false))

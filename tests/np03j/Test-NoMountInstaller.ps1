@@ -24,7 +24,7 @@ function Assert-NpStops {
 }
 $NpFunctions = $NpAst.FindAll({ param($NpNode) $NpNode -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
 foreach ($NpFunction in $NpFunctions) { . ([scriptblock]::Create($NpFunction.Extent.Text)) }
-Assert-NpTest ($NpFunctions.Count -eq 5) 'PowerShell syntax and expected helpers'
+Assert-NpTest ($NpFunctions.Count -eq 6) 'PowerShell syntax and expected helpers'
 
 $NpTemporary = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $NpTemporary | Out-Null

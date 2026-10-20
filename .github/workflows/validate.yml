@@ -39,3 +39,22 @@ jobs:
       - name: Validate NoMount installer and reboot verification
         shell: pwsh
         run: ./tests/np03j/Test-NoMountInstaller.ps1
+
+      - name: Validate NoMount JSON arrays on PowerShell 7
+        shell: pwsh
+        run: ./tests/np03j/Test-NoMountJson.ps1
+
+  windows-powershell:
+    name: Validate NoMount on Windows PowerShell 5.1
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Test JSON parsing on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
+            throw "Windows PowerShell 5.1 is required for this regression test"
+          }
+          ./tests/np03j/Test-NoMountJson.ps1
