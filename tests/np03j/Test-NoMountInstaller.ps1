@@ -96,3 +96,7 @@ try {
     Write-Host "NOMOUNT_INSTALLER_CHECKS_PASSED=$script:NpPassed"
     Write-Host ("NOMOUNT_INSTALLER_SHA256=" + (Get-FileHash -LiteralPath $NpInstaller -Algorithm SHA256).Hash.ToLowerInvariant())
 } finally { Remove-Item -LiteralPath $NpTemporary -Recurse -Force }
+
+# Expected negative native fixtures must not become the workflow exit status.
+# Any failed assertion throws before reaching this line.
+exit 0
