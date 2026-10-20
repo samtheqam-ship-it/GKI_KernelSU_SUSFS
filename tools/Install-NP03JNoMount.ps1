@@ -3,6 +3,8 @@
 & {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+    $OutputEncoding = [Console]::OutputEncoding
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $NpAdb = 'E:\platform-tools\adb.exe'
     $NpSerial = 'PDNP03J000070074'
@@ -66,7 +68,7 @@ stop() { echo "STOP: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || stop ROOT_REQUIRED
 [ -x "$K" ] && [ -x "$BB" ] || stop KSU_USERSPACE_MISSING
 "$K" --version
-"$K" --version | grep -q 'v3.4.2-50-gb427a3f9' || stop KSU_USERSPACE_VERSION_MISMATCH
+"$K" --version | grep -qF '3.4.2-50-gb427a3f9 (uapi: 6)' || stop KSU_USERSPACE_VERSION_MISMATCH
 [ ! -f "$D/disable" ] || stop NOMOUNT_SAFE_MODE_ALREADY_SET
 [ ! -d /data/adb/modules_update/nomount ] || stop NOMOUNT_UPDATE_ALREADY_PENDING
 if [ -L /data/adb/metamodule ]; then

@@ -49,6 +49,20 @@ try {
         & bash -n $NpPath
         Assert-NpTest ($LASTEXITCODE -eq 0) ("shell syntax: " + $NpName)
     }
+    $NpVersionLine = ($NpScripts['preflight.sh'] -split [char]10 | Where-Object { $_ -match 'grep -qF.*uapi: 6' } | Select-Object -First 1)
+    $NpVersionTool = Join-Path $NpTemporary 'ksud-version'
+    $NpVersionCheck = Join-Path $NpTemporary 'check-version.sh'
+    [IO.File]::WriteAllText($NpVersionCheck, ('K="$1"' + [char]10 + 'stop() { exit 1; }' + [char]10 + $NpVersionLine + [char]10))
+    foreach ($NpCase in @(
+        @('ksud 3.4.2-50-gb427a3f9 (uapi: 6)', 0),
+        @('ksud 3.4.2-50-gb427a3f9 (uapi: 5)', 1),
+        @('ksud 3.4.2-51-other (uapi: 6)', 1)
+    )) {
+        [IO.File]::WriteAllText($NpVersionTool, ('#!/bin/sh' + [char]10 + "echo '" + $NpCase[0] + "'" + [char]10))
+        & chmod 755 $NpVersionTool
+        & bash $NpVersionCheck $NpVersionTool
+        Assert-NpTest ($LASTEXITCODE -eq $NpCase[1]) ('pinned ksud CLI format: ' + $NpCase[0])
+    }
     $NpBefore = $NpScripts['preflight.sh']
     Assert-NpTest ($NpBefore.Contains('COMPETING_METAMODULE') -and $NpBefore.Contains('NOMOUNT_UPDATE_ALREADY_PENDING') -and $NpBefore.Contains('NOMOUNT_SAFE_MODE_ALREADY_SET')) 'conflicts and safe mode stop before install'
     $NpVerify = $NpScripts['verify.sh']
@@ -66,7 +80,13 @@ try {
         Assert-NpStops { Get-NpExclusions $NpBad } ('bad exclusion stops: ' + $NpBad)
     }
 
+    $NpUnicodeName = [string][char]0x0639 + [char]0x0632 + [char]0x0644
+    $NpUnicodeJson = ConvertTo-Json -InputObject @([pscustomobject]@{ uid = 12345; name = $NpUnicodeName }) -Compress
+    $NpUnicodeItems = Get-NpExclusions $NpUnicodeJson
+    Assert-NpTest ($NpUnicodeItems[0].name -ceq $NpUnicodeName) 'Arabic exclusion names survive normalization'
+
     $NpSource = [IO.File]::ReadAllText($NpInstaller)
+    Assert-NpTest ($NpSource.Contains('[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)')) 'native output uses explicit UTF-8 decoding'
     Assert-NpTest ($NpSource -notmatch 'fastboot|boot-patch|insmod|modprobe') 'installer has no partition writes or kernel-loader calls'
     Assert-NpTest ($NpSource.Contains('5ba9e1b2bbffab1238d5ca748759f9c301da91a18f1128007278cbf8a73b160c')) 'module is pinned to the paired release hash'
     Assert-NpTest ($NpSource.IndexOf('$NpPreflightResult =') -lt $NpSource.IndexOf('$NpInstall =')) 'preflight precedes installation'
