@@ -1,0 +1,237 @@
+name: NP03J · Android 14 / 6.1 LTS · Next Spoofed
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: np03j-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  resolve:
+    name: Lock latest compatible sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require the persistent signing identity
+        env:
+          NP03J_KEYSTORE_B64: ${{ secrets.NP03J_KEYSTORE_B64 }}
+          NP03J_KEYSTORE_PASSWORD: ${{ secrets.NP03J_KEYSTORE_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import base64, os, re
+          key = os.environ.get('NP03J_KEYSTORE_B64', '')
+          password = os.environ.get('NP03J_KEYSTORE_PASSWORD', '')
+          if not key or not re.fullmatch(r'[A-Za-z0-9_-]{24,128}', password):
+              raise SystemExit('Run tools/Setup-NP03JSigning.ps1 once: persistent signing secrets are missing or invalid.')
+          if not 0 < len(base64.b64decode(key, validate=True)) < 32000:
+              raise SystemExit('Invalid persistent signing keystore.')
+          PY
+      - name: Run build-contract regression checks
+        run: python3 -m unittest discover -s tests/np03j -v
+      - name: Resolve all branch tips once and check the official manager UAPI
+        run: python3 .github/np03j/np03j.py resolve source-lock "$RUNNER_TEMP/np03j-resolve"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: np03j-source-lock
+          path: source-lock/
+          if-no-files-found: error
+          retention-days: 30
+
+  manager:
+    name: Build and sign the fixed spoofed ARM64 manager
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: np03j-source-lock
+          path: source-lock
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - name: Prepare the exact official sources with a fixed spoofed package
+        id: toolchain
+        run: python3 .github/np03j/np03j.py prepare-manager source-lock/source-lock.json manager-source
+      - name: Install source-declared Android tools and Rust dependencies
+        env:
+          COMPILE_SDK: ${{ steps.toolchain.outputs.compile_sdk }}
+          BUILD_TOOLS: ${{ steps.toolchain.outputs.build_tools }}
+          NDK_VERSION: ${{ steps.toolchain.outputs.ndk }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends clang llvm libclang-dev cmake ninja-build pkg-config libssl-dev
+          sdkmanager "platforms;android-$COMPILE_SDK" "build-tools;$BUILD_TOOLS" "ndk;$NDK_VERSION" 'cmake;3.22.1'
+          rustup update stable --no-self-update
+          rustup default stable
+      - name: Decode the persistent key and export only its public certificate
+        env:
+          NP03J_KEYSTORE_B64: ${{ secrets.NP03J_KEYSTORE_B64 }}
+          NP03J_KEYSTORE_PASSWORD: ${{ secrets.NP03J_KEYSTORE_PASSWORD }}
+        run: python3 .github/np03j/np03j.py decode-signing manager-source
+      - name: Build ksuinit, ksud, the signed manager, and the built-in NoMount module
+        run: bash .github/np03j/build-manager.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: np03j-manager
+          path: manager-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove private signing material
+        if: always()
+        run: rm -f manager-source/manager/np03j-signing.p12 manager-source/manager/gradle.properties
+
+  kernel:
+    name: Build one NP03J 6.1 LTS / 4K kernel
+    needs: [resolve, manager]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: np03j-source-lock
+          path: source-lock
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: np03j-manager
+          path: manager-artifacts
+      - name: Prepare the kernel runner
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev lz4 zstd gawk python3 make gcc g++ git curl zip unzip rsync
+          df -h .
+      - name: Export locked revisions
+        id: pins
+        run: |
+          python3 - <<'PY'
+          import json, os
+          lock = json.load(open('source-lock/source-lock.json'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key in ('patches', 'anykernel', 'susfs', 'nomount'):
+                  output.write(f"{key}={lock['sources'][key]['sha']}\n")
+          PY
+      - uses: ./.github/actions/setup-build-environment
+        with:
+          version: android14-6.1
+          sublevel: lts
+          kernel_patches_commit: ${{ steps.pins.outputs.patches }}
+          anykernel3_commit: ${{ steps.pins.outputs.anykernel }}
+      - name: Sync the locked Android 14 / 6.1 LTS manifest
+        id: source
+        run: python3 .github/np03j/np03j.py sync-kernel source-lock/source-lock.json kernel
+      - uses: ./.github/actions/kernel-fixes
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: '6.1'
+          sublevel: ${{ steps.source.outputs.sublevel }}
+          os_patch_level: lts
+      - name: Integrate the matching root source and this manager certificate
+        run: python3 .github/np03j/np03j.py integrate-root source-lock/source-lock.json manager-artifacts/manager-identity.json kernel
+      - name: Apply the current locked SUSFS patch without obsolete header rewrites
+        run: python3 .github/np03j/np03j.py integrate-susfs source-lock/source-lock.json kernel
+      - uses: ./.github/actions/nomount
+        with:
+          commit: ${{ steps.pins.outputs.nomount }}
+          kernel_version: '6.1'
+      - name: Integrate Baseband Guard at its locked revision
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('np03j', '.github/np03j/np03j.py')
+          m = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          source = m.load_lock('source-lock/source-lock.json')['sources']['bbg']
+          m.clone_at(source['url'], source['sha'], Path('kernel/Baseband-guard'))
+          m.run('bash', 'Baseband-guard/setup.sh', source['sha'], cwd='kernel')
+          m.require(m.run('git', 'rev-parse', 'HEAD', cwd='kernel/Baseband-guard', capture=True).strip() == source['sha'], 'BBG revision drift')
+          PY
+      - uses: ./.github/actions/misc
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: '6.1'
+          sublevel: ${{ steps.source.outputs.sublevel }}
+          variant: Normal
+      - uses: ./.github/actions/stock-config
+        with:
+          version: android14-6.1
+          page_size: 4k
+      - name: Require stock config embedding, all selected features, and module-version checking
+        run: |
+          test -s kernel/common/arch/arm64/configs/stock_defconfig
+          grep -qF 'config_data: arch/arm64/configs/stock_defconfig FORCE' kernel/common/kernel/Makefile
+          if grep -qE 'CONFIG_KSU|SUSFS|SCHED_BORE' kernel/common/arch/arm64/configs/stock_defconfig; then
+            echo 'Stock config contains custom root markers.' >&2
+            exit 1
+          fi
+          python3 .github/np03j/np03j.py configure-kernel kernel
+          if find kernel/common -name '*.rej' -print -quit | grep -q .; then
+            echo 'Patch reject found.' >&2
+            exit 1
+          fi
+      - uses: ./.github/actions/remove-protected-exports
+      - name: Build and verify the actual config, page size, KMI, and manager trust
+        run: bash .github/np03j/build-kernel.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: np03j-kernel
+          path: kernel-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Verify the pair and publish one release
+    needs: [resolve, manager, kernel]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: np03j-source-lock
+          path: source-lock
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: np03j-manager
+          path: manager-artifacts
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: np03j-kernel
+          path: kernel-artifacts
+      - name: Validate and package the locked kernel/manager pair
+        run: python3 .github/np03j/np03j.py assemble source-lock/source-lock.json kernel-artifacts manager-artifacts release-assets
+      - name: Preserve the previous manager identity and publish complete assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NP03J_TARGET_SHA: ${{ github.sha }}
+        run: python3 .github/np03j/publish.py

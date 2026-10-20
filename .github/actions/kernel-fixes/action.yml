@@ -3,19 +3,14 @@ description: 'Applies compatibility fixes based on android/kernel/sublevel'
 inputs:
   version:
     required: true
-    type: string
   android_version:
     required: true
-    type: string
   kernel_version:
     required: true
-    type: string
   sublevel:
     required: true
-    type: string
   os_patch_level:
     required: true
-    type: string
 
 runs:
   using: composite
