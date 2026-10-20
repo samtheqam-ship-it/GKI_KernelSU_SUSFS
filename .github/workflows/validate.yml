@@ -35,3 +35,7 @@ jobs:
       - name: Validate NP03J installer syntax and flash guards
         shell: pwsh
         run: ./tests/np03j/Test-Installer.ps1
+
+      - name: Validate NoMount installer and reboot verification
+        shell: pwsh
+        run: ./tests/np03j/Test-NoMountInstaller.ps1
